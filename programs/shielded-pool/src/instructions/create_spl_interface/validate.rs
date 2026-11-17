@@ -67,5 +67,8 @@ fn is_allowed_mint_extension(extension: &ExtensionType) -> bool {
             | ExtensionType::ConfidentialTransferFeeConfig
             | ExtensionType::ConfidentialMintBurn
             | ExtensionType::TransferFeeConfig
+            | ExtensionType::PermanentDelegate
+            | ExtensionType::MintCloseAuthority
+            | ExtensionType::TransferHook
     )
 }
