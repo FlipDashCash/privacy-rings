@@ -181,6 +181,15 @@ impl IndexedProofRequest {
         {
             return Err(invalid());
         }
+        // A transfer of only dummies opens its tree with a random first dummy.
+        let deposit = data
+            .inputs
+            .first()
+            .is_some_and(|lookup| lookup.nullifier.is_none())
+            && metadata
+                .inputs
+                .iter()
+                .all(|input| input.is_dummy.as_deref() == Some("0x1"));
         let mut next_tree = 0usize;
         for (index, (lookup, input)) in data.inputs.iter().zip(metadata.inputs.iter()).enumerate() {
             let slot = usize::from(lookup.tree_slot);
@@ -250,9 +259,10 @@ impl IndexedProofRequest {
                 return Err(invalid());
             }
             // Inputs from different trees may interleave. A real input opens
-            // trees in first-use order, and a dummy only joins an open tree.
+            // trees in first-use order, and a dummy only joins an open tree
+            // unless every input is a dummy.
             if slot == next_tree {
-                if dummy {
+                if dummy && !deposit {
                     return Err(invalid());
                 }
                 next_tree += 1;
@@ -682,6 +692,37 @@ mod tests {
         let body: serde_json::Value = serde_json::from_str(&request.body().unwrap()).unwrap();
         assert_eq!(body["minContextSlot"], 42);
         assert!(body["prepared"].get("treeSlots").is_none());
+    }
+
+    #[test]
+    fn only_a_frame_of_dummies_opens_a_tree_with_one() {
+        let request = |dummies: &[bool], first_nullifier: Option<[u8; 32]>| {
+            let mut data = request_data();
+            let inputs: Vec<_> = dummies
+                .iter()
+                .map(|dummy| json!({"treeSlot":"0x0", "isDummy": if *dummy { "0x1" } else { "0x0" }}))
+                .collect();
+            *data.witness = json!({"circuitType":"transfer-confidential", "nInputs": dummies.len(),
+                "nOutputs":2, "inputs": inputs, "outputs":[{}, {}]})
+            .to_string();
+            data.inputs = dummies
+                .iter()
+                .zip(0..)
+                .map(|(dummy, index)| IndexedLookup {
+                    tree_slot: 0,
+                    commitment: (!dummy).then(scalar_one),
+                    nullifier: first_nullifier.filter(|_| index == 0),
+                })
+                .collect();
+            IndexedProofRequest::new(data)
+        };
+        request(&[true, true], None).expect("a deposit opens its tree");
+        for refused in [
+            request(&[true, false], None),
+            request(&[true, true], Some(scalar_one())),
+        ] {
+            assert!(matches!(refused, Err(ClientError::InvalidIndexedRequest)));
+        }
     }
 
     /// A ring merge proof binds no ciphertext, so its request carries the
