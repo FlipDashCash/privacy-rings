@@ -31,6 +31,7 @@ Breaking
 
 Added
 
+- `ConfidentialTransfer.withdrawMany` prepares an ordered batch of public withdrawals in one transfer. The same per-asset conservation and settlement rules apply, and `withdraw` remains the single-leg shortcut.
 - `ProgramProofInputs` types the prover input map of a `ProgramTransaction`, and `TransactionErrorCode.TRANSACTION_PROGRAM_PUBLIC_HASH_MISMATCH` reports proof inputs bound to another public hash.
 - `ClientErrorCode.CLIENT_INDEXER_RESPONSE_TOO_LARGE` reports an indexer response above 10 MiB, the most Photon sends, whether the SDK or Photon (`-32008`) refuses it.
 - `SprClient.proveAnonymousRingTransact(input)` accepts a `TransactOwnerSigner` or an owner signature prepared over `transactMessageDigest(proofInputs)`.

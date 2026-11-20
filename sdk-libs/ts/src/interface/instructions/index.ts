@@ -332,8 +332,11 @@ export async function depositInstruction(
   );
 }
 
-function settlementAccounts(withdrawal?: TransactWithdrawal): AccountMeta[] {
+function settlementAccounts(
+  withdrawal?: TransactWithdrawal | readonly TransactWithdrawal[],
+): AccountMeta[] {
   if (withdrawal === undefined) return [];
+  if (!("kind" in withdrawal)) return withdrawal.flatMap(settlementAccounts);
   if (withdrawal.kind === "sol") {
     return [meta(SOL_INTERFACE, false, true), meta(withdrawal.recipient, false, true)];
   }
@@ -413,7 +416,7 @@ export interface TransactAccountsInput {
    * authorizes no spend, so a sponsor can pay for a spend it does not own.
    */
   readonly ownerSigners: readonly SignerAccount[];
-  readonly withdrawal?: TransactWithdrawal;
+  readonly withdrawal?: TransactWithdrawal | readonly TransactWithdrawal[];
   readonly cache?: TransactCacheAccounts;
   readonly data: TransactInstructionData;
 }
@@ -481,7 +484,7 @@ export async function ringTransactAccounts(
     inputs: readonly InputUtxo[];
     treeContexts: readonly TreeContext[];
     ownerSigners?: readonly SignerAccount[];
-    withdrawal?: TransactWithdrawal;
+    withdrawal?: TransactWithdrawal | readonly TransactWithdrawal[];
     cache?: TransactCacheAccounts;
   }>,
 ): Promise<readonly AccountMeta[]> {

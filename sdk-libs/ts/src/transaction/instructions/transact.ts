@@ -1006,7 +1006,8 @@ export class ConfidentialTransfer {
   readonly #blindingSeed = randomBlinding();
   readonly #inputTreeIds: readonly TreeId[];
   #outputTreeId: TreeId = DEFAULT_TREE_ID;
-  #withdrawal?: Readonly<{ asset: Address; amount: bigint; target: WithdrawalTarget }>;
+  #withdrawals: readonly Readonly<{ asset: Address; amount: bigint; target: WithdrawalTarget }>[] =
+    [];
   #shape?: Shape;
   #ringProgramId?: Address;
   #compactPadding = false;
@@ -1100,21 +1101,36 @@ export class ConfidentialTransfer {
   }
 
   withdraw(asset: Address, amount: bigint, target: WithdrawalTarget): void {
-    if (this.#withdrawal) throw new TransactionError("TRANSACTION_WITHDRAWAL_ALREADY_SET");
-    checkU64(amount, "withdrawal amount");
-    if (amount === 0n) {
+    this.withdrawMany([{ asset, amount, target }]);
+  }
+
+  /** Add one ordered batch of public withdrawals, snapshotting each leg. */
+  withdrawMany(
+    withdrawals: readonly Readonly<{ asset: Address; amount: bigint; target: WithdrawalTarget }>[],
+  ): void {
+    if (this.#withdrawals.length > 0) {
+      throw new TransactionError("TRANSACTION_WITHDRAWAL_ALREADY_SET");
+    }
+    if (withdrawals.length === 0 || withdrawals.length > 0xff) {
       throw new TransactionError("TRANSACTION_INVALID_AMOUNT", {
-        field: "withdrawal amount",
-        value: "0",
+        field: "withdrawal leg count",
+        value: withdrawals.length.toString(),
       });
     }
-    if (target.kind === "spl" && asset === ZERO_ADDRESS) {
-      throw new TransactionError("TRANSACTION_WITHDRAWAL_ASSET_MISMATCH");
-    }
-    if (target.kind === "sol" && asset !== ZERO_ADDRESS) {
-      throw new TransactionError("TRANSACTION_WITHDRAWAL_ASSET_MISMATCH");
-    }
-    this.#withdrawal = { asset, amount, target };
+    const checked = withdrawals.map(({ asset, amount, target }) => {
+      checkU64(amount, "withdrawal amount");
+      if (amount === 0n) {
+        throw new TransactionError("TRANSACTION_INVALID_AMOUNT", {
+          field: "withdrawal amount",
+          value: "0",
+        });
+      }
+      if ((target.kind === "sol") !== (asset === ZERO_ADDRESS)) {
+        throw new TransactionError("TRANSACTION_WITHDRAWAL_ASSET_MISMATCH");
+      }
+      return Object.freeze({ asset, amount, target: Object.freeze({ ...target }) });
+    });
+    this.#withdrawals = Object.freeze(checked);
   }
 
   prepare(): PreparedTransfer {
@@ -1122,14 +1138,17 @@ export class ConfidentialTransfer {
       [
         ...this.#inputs.map((input) => input.utxo.asset),
         ...this.#recipients.map((recipient) => recipient.asset),
-        ...(this.#withdrawal ? [this.#withdrawal.asset] : []),
+        ...this.#withdrawals.map((leg) => leg.asset),
       ].filter((asset) => asset !== ZERO_ADDRESS),
     );
     if (splAssets.size > 1) throw new TransactionError("TRANSACTION_MULTIPLE_PUBLIC_SPL_ASSETS");
     const splAsset = [...splAssets][0];
-    const publicSol = this.#withdrawal?.asset === ZERO_ADDRESS ? -this.#withdrawal.amount : 0n;
-    const publicSpl =
-      this.#withdrawal && this.#withdrawal.asset !== ZERO_ADDRESS ? -this.#withdrawal.amount : 0n;
+    const withdrawn = (asset: Address): bigint =>
+      this.#withdrawals
+        .filter((leg) => leg.asset === asset)
+        .reduce((sum, leg) => sum + leg.amount, 0n);
+    const publicSol = -withdrawn(ZERO_ADDRESS);
+    const publicSpl = splAsset === undefined ? 0n : -withdrawn(splAsset);
     const change = (asset: Address, publicAmount: bigint): bigint => {
       const inputs = this.#inputs
         .filter((input) => input.utxo.asset === asset)
@@ -1209,29 +1228,19 @@ export class ConfidentialTransfer {
     // Padding belongs to `finalize`, where Rust does it: the slots handed to an
     // authority for encryption are the real outputs only.
     const inputs = [...this.#inputs];
-    const target = this.#withdrawal?.target;
-    const interfaceTransfers: SettlementTransfer[] =
-      this.#withdrawal === undefined || target === undefined
-        ? []
-        : target.kind === "sol"
-          ? [
-              {
-                kind: "sol",
-                isDeposit: false,
-                amount: this.#withdrawal.amount,
-                userSolAccount: target.recipient,
-              },
-            ]
-          : [
-              {
-                kind: "spl",
-                mint: this.#withdrawal.asset,
-                isDeposit: false,
-                amount: this.#withdrawal.amount,
-                tokenAccount: target.recipientTokenAccount,
-                splInterfaceBump: target.splInterfaceBump,
-              },
-            ];
+    const interfaceTransfers: SettlementTransfer[] = this.#withdrawals.map(
+      ({ asset, amount, target }) =>
+        target.kind === "sol"
+          ? { kind: "sol", isDeposit: false, amount, userSolAccount: target.recipient }
+          : {
+              kind: "spl",
+              mint: asset,
+              isDeposit: false,
+              amount,
+              tokenAccount: target.recipientTokenAccount,
+              splInterfaceBump: target.splInterfaceBump,
+            },
+    );
     return preparedTransfer({
       owner: this.#owner,
       ownerMode: "signed",
