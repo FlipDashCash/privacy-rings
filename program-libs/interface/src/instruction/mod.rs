@@ -1,6 +1,7 @@
 #[cfg(feature = "borsh")]
 use alloc::vec::Vec;
 pub mod instruction_data;
+pub mod token_2022_accounting;
 #[cfg(feature = "borsh")]
 use borsh::BorshSerialize;
 pub use instruction_data::{
