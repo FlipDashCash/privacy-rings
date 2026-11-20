@@ -387,9 +387,11 @@ export function prepareTransfer(
   circuit: TransferCircuit = { kind: "confidential" },
 ): PreparedTransferAssembly {
   try {
-    const checked = checkedTransferPlan(proofInputs, circuit);
-    const slots = prepareSlots(proofInputs.inputUtxos, (input) =>
-      bytesField(input.utxo.owner.ownerProofInputHash(), "owner public key"),
+    const checked = checkedTransferPlan(proofInputs, circuit, /* indexed */ true);
+    const slots = prepareSlots(
+      proofInputs.inputUtxos,
+      (input) => bytesField(input.utxo.owner.ownerProofInputHash(), "owner public key"),
+      checked.deposit,
     );
     return prepareTransferUnchecked(proofInputs, slots, checked);
   } catch (cause) {
@@ -448,7 +450,11 @@ function assembleUnchecked(
   });
 }
 
-function checkedTransferPlan(proofInputs: SppProofInputs, circuit: TransferCircuit) {
+function checkedTransferPlan(
+  proofInputs: SppProofInputs,
+  circuit: TransferCircuit,
+  indexed = false,
+) {
   if (!(proofInputs instanceof SppProofInputs)) {
     throw new ClientError("CLIENT_INVALID_PROOF_INPUTS");
   }
@@ -485,12 +491,37 @@ function checkedTransferPlan(proofInputs: SppProofInputs, circuit: TransferCircu
   ) {
     throw new ClientError("CLIENT_INVALID_PROOF_INPUTS");
   }
-  const realInputs = proofInputs.inputUtxos.filter((input) => !input.isDummy());
-  if (realInputs.length === 0) throw new ClientError("CLIENT_NO_INPUTS");
+  const deposit = proofInputs.inputUtxos.every((input) => input.isDummy());
+  if (deposit) {
+    // Only the funded indexed custom-ring rail opens a tree from a random dummy.
+    // Keep direct, merge, authority and in-proof-owner routes unchanged.
+    if (!indexed || circuit.kind !== "ring") throw new ClientError("CLIENT_NO_INPUTS");
+    const [leg, ...rest] = proofInputs.externalData.interfaceTransfers;
+    if (
+      leg === undefined ||
+      rest.length !== 0 ||
+      !leg.isDeposit ||
+      leg.amount <= 0n ||
+      proofInputs.inputUtxos[0]?.isCompact() ||
+      proofInputs.inputUtxos.some((input) => input.treeId !== proofInputs.outputTreeId) ||
+      proofInputs.cacheAccounts.read !== undefined ||
+      proofInputs.cacheAccounts.write !== undefined
+    )
+      throw new ClientError("CLIENT_INVALID_PROOF_INPUTS");
+    const asset = leg.kind === "sol" ? SOL_MINT : leg.mint;
+    let funded = 0n;
+    for (const output of proofInputs.outputs) {
+      if (output.isDummy() || output.amount === 0n) continue;
+      if (output.asset !== asset || output.ringProgramId !== circuit.ring)
+        throw new ClientError("CLIENT_INVALID_PROOF_INPUTS");
+      funded += output.amount;
+    }
+    if (funded !== leg.amount) throw new ClientError("CLIENT_INVALID_PROOF_INPUTS");
+  }
   validateOutputBlindings(proofInputs);
   const cache = checkedTransferCache(proofInputs);
 
-  return { plan, cache };
+  return { plan, cache, deposit };
 }
 
 function prepareTransferUnchecked(
@@ -1077,12 +1108,14 @@ export function prepareInput(
 export function prepareSlots(
   inputs: readonly ProofInputUtxo[],
   ownerField: (input: ProofInputUtxo, index: number) => bigint,
+  deposit = false,
 ): PreparedSlots {
   const treeIds: TreeId[] = [];
   const treeIndexes: number[] = [];
   const transferInputs = inputs.map((input, index) => {
     let treeSlot = treeIds.indexOf(input.treeId);
-    if (input.isDummy()) {
+    const opensDepositTree = deposit && index === 0 && input.isDummy() && !input.isCompact();
+    if (input.isDummy() && !opensDepositTree) {
       if (treeIds.length === 0) throw new ClientError("CLIENT_NO_INPUTS");
       // SPP packs tree index 0 for the slots it never receives, so compact
       // padding must name the first tree.
