@@ -1,4 +1,6 @@
 mod account;
+#[allow(dead_code)] // Prepared for a future explicit admission path; no runtime callers.
+mod fee_observation;
 mod sol;
 mod spl;
 pub(crate) mod validate;
