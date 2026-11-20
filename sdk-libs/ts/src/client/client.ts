@@ -983,6 +983,9 @@ export class SprClient
           roots: complete.roots,
         });
       }
+      // A public-funded composed deposit has no real input tree opening on the direct route.
+      if (proofInputs.inputUtxos.every((input) => input.isDummy()))
+        throw new ClientError("CLIENT_NO_INPUTS");
       const { proofs, dummyProofs } = await this.#inputProofs(proofInputs, config, context);
       const assembled = assemble(proofInputs, proofs, dummyProofs, circuit);
       const proof = await keys.prove(assembled.proverInputs, context);
